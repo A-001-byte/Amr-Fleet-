@@ -1,0 +1,4 @@
+num_robots,trials,baseline_throughput_avg,smart_throughput_avg,baseline_reduction_pct,baseline_wait_ticks_avg,smart_wait_ticks_avg,collision_count
+4,5,1.67,11.78,85.8,12254.8,1978.2,0
+8,5,2.17,17.17,87.4,26109.2,7213.4,0
+16,5,1.5,25.39,94.1,54531.0,20185.8,0
