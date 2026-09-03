@@ -1,0 +1,15 @@
+metric,value
+mode,baseline
+seed,42
+num_robots,4
+total_ticks,7200
+total_tasks_completed,6
+average_task_completion_ticks,346.00
+total_wait_ticks,26103
+collision_count,0
+
+robot_id,tasks_completed,wait_ticks
+0,1,6611
+1,2,6332
+2,2,6611
+3,1,6549
