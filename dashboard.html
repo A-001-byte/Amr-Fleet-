@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SwarmSync - Live Comparison Dashboard</title>
+<style>
+  :root {
+    --bg: #17181c;
+    --panel: #1f2127;
+    --border: #33363f;
+    --text: #e6e6e6;
+    --muted: #9aa0ab;
+    --baseline: #e0574a;
+    --smart: #3ec98f;
+    --waiting: #e0b93c;
+    --deadlock: #e0574a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    padding: 20px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px 0; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .columns { display: flex; gap: 20px; flex-wrap: wrap; }
+  .panel {
+    flex: 1 1 460px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .panel h2 { margin: 0 0 10px 0; font-size: 16px; }
+  .panel.baseline h2 { color: var(--baseline); }
+  .panel.smart h2 { color: var(--smart); }
+  canvas.grid { width: 100%; height: 400px; background: #101115; border-radius: 6px; display: block; }
+  .stats { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+  .stat-card {
+    flex: 1 1 100px;
+    background: #14161b;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    text-align: center;
+  }
+  .stat-card .value { font-size: 22px; font-weight: 700; }
+  .stat-card .label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .kill-row { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+  .kill-row select, .kill-row button {
+    background: #14161b; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 13px;
+  }
+  .kill-row button { cursor: pointer; }
+  .kill-row button:hover { border-color: var(--baseline); }
+  .events {
+    margin-top: 12px; font-size: 11px; color: var(--muted);
+    max-height: 90px; overflow-y: auto; background: #0f1014;
+    border-radius: 6px; padding: 6px 8px; line-height: 1.5;
+  }
+  .chart-panel {
+    margin-top: 20px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  .chart-panel h2 { margin: 0 0 4px 0; font-size: 16px; }
+  .legend { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .legend span { margin-right: 16px; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  canvas.chart { width: 100%; height: 220px; background: #101115; border-radius: 6px; }
+  .killed-badge { color: var(--baseline); font-size: 11px; margin-left: 6px; }
+</style>
+</head>
+<body>
+  <h1>SwarmSync &mdash; Live Comparison Dashboard</h1>
+  <div class="subtitle">Baseline (stop-and-wait) vs Smart (priority negotiation) &mdash; same warehouse layout, same seed, running live.</div>
+
+  <div class="columns">
+    <div class="panel baseline">
+      <h2>Baseline &mdash; Stop and Wait</h2>
+      <canvas class="grid" id="grid-baseline" width="480" height="400"></canvas>
+      <div class="stats">
+        <div class="stat-card"><div class="value" id="b-tasks">0</div><div class="label">TASKS DONE</div></div>
+        <div class="stat-card"><div class="value" id="b-wait">0</div><div class="label">WAIT TICKS</div></div>
+        <div class="stat-card"><div class="value" id="b-throughput">0.00</div><div class="label">TASKS / 1000 TICKS</div></div>
+      </div>
+      <div class="kill-row">
+        <select id="b-robot-select"></select>
+        <button onclick="killRobot('baseline')">Kill / Disconnect Robot</button>
+      </div>
+      <div class="events" id="b-events"></div>
+    </div>
+
+    <div class="panel smart">
+      <h2>Smart &mdash; Priority Negotiation</h2>
+      <canvas class="grid" id="grid-smart" width="480" height="400"></canvas>
+      <div class="stats">
+        <div class="stat-card"><div class="value" id="s-tasks">0</div><div class="label">TASKS DONE</div></div>
+        <div class="stat-card"><div class="value" id="s-wait">0</div><div class="label">WAIT TICKS</div></div>
+        <div class="stat-card"><div class="value" id="s-throughput">0.00</div><div class="label">TASKS / 1000 TICKS</div></div>
+      </div>
+      <div class="kill-row">
+        <select id="s-robot-select"></select>
+        <button onclick="killRobot('smart')">Kill / Disconnect Robot</button>
+      </div>
+      <div class="events" id="s-events"></div>
+    </div>
+  </div>
+
+  <div class="chart-panel">
+    <h2>Throughput Over Time</h2>
+    <div class="legend">
+      <span><span class="swatch" style="background:var(--baseline)"></span>Baseline</span>
+      <span><span class="swatch" style="background:var(--smart)"></span>Smart</span>
+    </div>
+    <canvas class="chart" id="chart" width="1000" height="220"></canvas>
+  </div>
+
+<script>
+const STATUS_COLORS = { MOVING: "#6edc6e", WAITING: "#e0b93c", DEADLOCK: "#e0574a" };
+let layout = null;
+let lastState = null;
+
+async function loadLayout() {
+  const res = await fetch("/api/layout");
+  layout = await res.json();
+}
+
+function computeNodePositions(canvasW, canvasH) {
+  const margin = 24;
+  const usableW = canvasW - 2 * margin;
+  const usableH = canvasH - 2 * margin;
+  const stepX = usableW / Math.max(layout.width - 1, 1);
+  const stepY = usableH / Math.max(layout.height - 1, 1);
+  const pos = {};
+  for (const node of layout.nodes) {
+    pos[`${node.x},${node.y}`] = [margin + node.x * stepX, margin + node.y * stepY];
+  }
+  return pos;
+}
+
+function drawGrid(canvasId, snapshot) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  if (!layout) return;
+  const pos = computeNodePositions(w, h);
+
+  ctx.strokeStyle = "#2a2d35";
+  ctx.lineWidth = 1;
+  for (const [a, b] of layout.edges) {
+    const pa = pos[`${a[0]},${a[1]}`], pb = pos[`${b[0]},${b[1]}`];
+    ctx.beginPath();
+    ctx.moveTo(pa[0], pa[1]);
+    ctx.lineTo(pb[0], pb[1]);
+    ctx.stroke();
+  }
+
+  for (const node of layout.nodes) {
+    const p = pos[`${node.x},${node.y}`];
+    let color = "#555b68", radius = 3;
+    if (node.kind === "blocked") { color = "#8a3a34"; }
+    else if (node.kind === "pickup") { color = "#3a8a5f"; radius = 4.5; }
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], radius, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  for (const robot of snapshot.robots) {
+    const from = pos[`${robot.from[0]},${robot.from[1]}`];
+    const to = pos[`${robot.to[0]},${robot.to[1]}`];
+    const t = robot.t;
+    const x = from[0] + (to[0] - from[0]) * t;
+    const y = from[1] + (to[1] - from[1]) * t;
+
+    if (robot.status === "DEADLOCK") {
+      ctx.beginPath();
+      ctx.arc(x, y, 10, 0, Math.PI * 2);
+      ctx.strokeStyle = STATUS_COLORS.DEADLOCK;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    ctx.beginPath();
+    ctx.arc(x, y, 7, 0, Math.PI * 2);
+    ctx.fillStyle = `rgb(${robot.color[0]},${robot.color[1]},${robot.color[2]})`;
+    ctx.fill();
+
+    ctx.fillStyle = "#101115";
+    ctx.font = "9px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`R${robot.id + 1}`, x, y);
+  }
+}
+
+function updateStats(prefix, snapshot) {
+  document.getElementById(`${prefix}-tasks`).textContent = snapshot.tasks_completed;
+  document.getElementById(`${prefix}-wait`).textContent = snapshot.total_wait_ticks;
+  document.getElementById(`${prefix}-throughput`).textContent = snapshot.throughput.toFixed(2);
+
+  const select = document.getElementById(`${prefix}-robot-select`);
+  const activeIds = snapshot.robots.map(r => r.id);
+  const currentOptions = Array.from(select.options).map(o => parseInt(o.value));
+  if (JSON.stringify(currentOptions) !== JSON.stringify(activeIds)) {
+    select.innerHTML = "";
+    for (const id of activeIds) {
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = `R${id + 1}`;
+      select.appendChild(opt);
+    }
+  }
+
+  const eventsEl = document.getElementById(`${prefix}-events`);
+  const lines = snapshot.recent_events.slice().reverse().map(ev => {
+    if (ev.type === "deadlock") {
+      return `<div>tick ${ev.tick}: <b>DEADLOCK</b> R${ev.robot + 1} — ${ev.reason}</div>`;
+    }
+    return `<div>tick ${ev.tick}: R${ev.robot + 1} yields — ${ev.reason}</div>`;
+  });
+  const killedLine = snapshot.killed_robot_ids.length
+    ? `<div class="killed-badge">Killed: ${snapshot.killed_robot_ids.map(id => "R" + (id + 1)).join(", ")}</div>`
+    : "";
+  eventsEl.innerHTML = killedLine + (lines.join("") || "<div>No negotiation events yet.</div>");
+}
+
+function drawChart(baseline, smart) {
+  const canvas = document.getElementById("chart");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  const margin = { left: 40, right: 10, top: 10, bottom: 20 };
+  ctx.clearRect(0, 0, w, h);
+
+  const allPoints = [...baseline, ...smart];
+  if (allPoints.length === 0) return;
+  const maxTick = Math.max(...allPoints.map(p => p[0]), 1);
+  const maxVal = Math.max(...allPoints.map(p => p[1]), 1);
+
+  const plotW = w - margin.left - margin.right;
+  const plotH = h - margin.top - margin.bottom;
+  const xScale = t => margin.left + (t / maxTick) * plotW;
+  const yScale = v => margin.top + plotH - (v / maxVal) * plotH;
+
+  ctx.strokeStyle = "#33363f";
+  ctx.beginPath();
+  ctx.moveTo(margin.left, margin.top);
+  ctx.lineTo(margin.left, margin.top + plotH);
+  ctx.lineTo(margin.left + plotW, margin.top + plotH);
+  ctx.stroke();
+
+  ctx.fillStyle = "#9aa0ab";
+  ctx.font = "10px sans-serif";
+  ctx.fillText(maxVal.toFixed(1), 4, margin.top + 8);
+  ctx.fillText("0", 4, margin.top + plotH);
+
+  function drawSeries(points, color) {
+    if (points.length < 2) return;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    points.forEach(([t, v], i) => {
+      const x = xScale(t), y = yScale(v);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+  drawSeries(baseline, "#e0574a");
+  drawSeries(smart, "#3ec98f");
+}
+
+async function killRobot(mode) {
+  const select = document.getElementById(mode === "baseline" ? "b-robot-select" : "s-robot-select");
+  const robotId = select.value;
+  if (robotId === "") return;
+  await fetch(`/api/kill/${mode}/${robotId}`, { method: "POST" });
+}
+
+async function poll() {
+  try {
+    const res = await fetch("/api/state");
+    const state = await res.json();
+    lastState = state;
+    drawGrid("grid-baseline", state.baseline);
+    drawGrid("grid-smart", state.smart);
+    updateStats("b", state.baseline);
+    updateStats("s", state.smart);
+    drawChart(state.baseline.throughput_history, state.smart.throughput_history);
+  } catch (e) {
+    console.error(e);
+  }
+  setTimeout(poll, 200);
+}
+
+(async function init() {
+  await loadLayout();
+  poll();
+})();
+</script>
+</body>
+</html>

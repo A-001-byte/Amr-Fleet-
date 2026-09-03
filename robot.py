@@ -33,6 +33,13 @@ class Robot:
         self.wait_ticks = 0  # consecutive ticks spent blocked, waiting to move
         self.detour_flash = 0  # frames left to visually flag a deadlock break
 
+        # Set by simulation.assign_new_goal() if no pickup point is reachable
+        # from the robot's current position (should not happen now that
+        # warehouse.py guarantees a fully-connected layout, but handled
+        # defensively rather than assumed away). An idle robot sits still
+        # and keeps retrying instead of endlessly "completing" fake tasks.
+        self.idle = False
+
         # Metrics bookkeeping (see metrics.py). Tick at which the robot's
         # current task (route to its current goal) began, so task duration
         # can be computed when it arrives.

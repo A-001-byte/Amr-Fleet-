@@ -54,7 +54,7 @@ DEADLOCK_WAIT_THRESHOLD = 45  # ticks stuck before we call it a deadlock (~0.75s
 DETOUR_FLASH_FRAMES = 20  # how long to visually flag a robot that just detoured
 
 
-def resolve_and_update(robots, graph, baseline=False, metrics=None, tick=0):
+def resolve_and_update(robots, graph, baseline=False, metrics=None, tick=0, event_log=None):
     """
     Advance all robots by one tick, respecting node reservations and (in
     smart mode) breaking deadlocks when detected.
@@ -64,6 +64,10 @@ def resolve_and_update(robots, graph, baseline=False, metrics=None, tick=0):
     metrics: optional Metrics instance to log wait ticks and any detected
         collisions (see metrics.py).
     tick: current simulation tick, passed through for metrics logging.
+    event_log: optional list to append structured negotiation/deadlock event
+        dicts to, for display in the simulation UI. If None, no events are
+        appended (backwards compatible). Each dict has a "type" key of
+        "yield" or "deadlock", plus relevant context fields.
     """
     _check_for_collisions(robots, metrics, tick)
 
@@ -130,6 +134,30 @@ def resolve_and_update(robots, graph, baseline=False, metrics=None, tick=0):
         if robot.wait_ticks == 0:
             holder_id = occupied_by.get(target, claimed_by.get(target))
             print(f"[negotiate] Robot {robot.id} yields to Robot {holder_id} at node {target}")
+            # Determine the actual reason from the priority sort key:
+            # key = (-wait_ticks, len(path), id). Since this is the FIRST
+            # tick the robot is blocked (wait_ticks==0), the holder wins
+            # because it either had longer prior wait, shorter remaining
+            # path, or lower id. Compare the two to find the real reason.
+            if event_log is not None:
+                holder = next((r for r in robots if r.id == holder_id), None)
+                if holder is not None:
+                    if holder.wait_ticks > robot.wait_ticks:
+                        reason = f"R{holder_id + 1} waited longer (starvation prevention)"
+                    elif len(holder.path) < len(robot.path):
+                        reason = f"R{holder_id + 1} has shorter remaining path ({len(holder.path)} vs {len(robot.path)} steps)"
+                    else:
+                        reason = f"R{holder_id + 1} has lower ID (tie-break)"
+                else:
+                    reason = "holder has reservation priority"
+                event_log.append({
+                    "tick": tick,
+                    "type": "yield",
+                    "robot": robot.id,
+                    "holder": holder_id,
+                    "node": target,
+                    "reason": reason,
+                })
 
         robot.wait_ticks += 1
 
@@ -140,6 +168,16 @@ def resolve_and_update(robots, graph, baseline=False, metrics=None, tick=0):
                     f"[deadlock] Robot {robot.id} stuck for {robot.wait_ticks} "
                     f"ticks at {robot.position} -> detouring via {detour_node}"
                 )
+                if event_log is not None:
+                    event_log.append({
+                        "tick": tick,
+                        "type": "deadlock",
+                        "robot": robot.id,
+                        "wait_ticks": robot.wait_ticks,
+                        "position": robot.position,
+                        "via": detour_node,
+                        "reason": f"stuck {robot.wait_ticks} ticks, forced detour to {detour_node}",
+                    })
                 # Re-plan from the detour node to the robot's real goal, rather
                 # than splicing it onto the stale path - the old path's next
                 # node might not even be adjacent to the detour node.
